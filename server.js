@@ -525,96 +525,103 @@ function renderPage() {
       pollJob(id, statusEl);
     });
 
-    // ── 탭2: 실시간 녹음 (MediaRecorder + OpenAI Whisper) ──
+    // ── 탭2: 실시간 녹음 (Web Speech API - 장시간 안정 버전) ──
     const transcriptBox = document.getElementById('transcript-box');
     const interimEl     = document.getElementById('interim-text');
     const recBtn        = document.getElementById('rec-btn');
     const recStatus     = document.getElementById('rec-status');
     const charCount     = document.getElementById('char-count');
-    let mediaRecorder = null;
-    let audioChunks   = [];
-    let isRecording   = false;
-    let chunkTimer    = null;
-    let elapsedTimer  = null;
-    let elapsedSec    = 0;
+    let isRecording  = false;
+    let recognition  = null;
+    let elapsedTimer = null;
+    let elapsedSec   = 0;
+    let restartTimer = null;
 
     transcriptBox.addEventListener('input', () => { charCount.textContent = transcriptBox.value.length; });
     recBtn.addEventListener('click', () => { if (!isRecording) startRecording(); else stopRecording(); });
 
     function fmtTime(s) { return String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0'); }
 
-    async function startRecording() {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4';
-        mediaRecorder = new MediaRecorder(stream, { mimeType });
-        audioChunks = [];
-        isRecording = true;
-        elapsedSec = 0;
-
-        recBtn.className = 'rec-btn recording';
-        recBtn.textContent = '⏹';
-        recStatus.className = 'rec-status on';
-        recStatus.textContent = '🔴 녹음 중... 00:00';
-
-        elapsedTimer = setInterval(() => {
-          elapsedSec++;
-          if (isRecording) recStatus.textContent = '🔴 녹음 중... ' + fmtTime(elapsedSec);
-        }, 1000);
-
-        mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data); };
-        mediaRecorder.start(1000);
-
-        // 30초마다 자동 전사
-        chunkTimer = setInterval(() => sendChunk(false), 30000);
-      } catch(err) {
-        recStatus.textContent = '⚠️ 마이크 접근 실패: ' + err.message;
-      }
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      recStatus.textContent = '⚠️ Chrome 브라우저에서만 지원됩니다.';
+      recBtn.disabled = true;
     }
 
-    async function stopRecording() {
+    function createRecognition() {
+      const r = new SpeechRecognition();
+      r.lang = 'ko-KR';
+      r.continuous = true;
+      r.interimResults = true;
+      r.maxAlternatives = 1;
+
+      r.onresult = (e) => {
+        let interim = '';
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          if (e.results[i].isFinal) {
+            transcriptBox.value += e.results[i][0].transcript;
+            charCount.textContent = transcriptBox.value.length;
+            interim = '';
+          } else {
+            interim += e.results[i][0].transcript;
+          }
+        }
+        interimEl.textContent = interim;
+        clearTimeout(restartTimer);
+        restartTimer = setTimeout(() => { if (isRecording) restartRecognition(); }, 8000);
+      };
+
+      r.onerror = (e) => {
+        if (e.error === 'no-speech') { if (isRecording) restartRecognition(); return; }
+        if (e.error === 'aborted')   { return; }
+        recStatus.textContent = '⚠️ 오류: ' + e.error;
+        if (isRecording) setTimeout(() => restartRecognition(), 1000);
+      };
+
+      r.onend = () => {
+        interimEl.textContent = '';
+        if (isRecording) restartRecognition();
+      };
+
+      return r;
+    }
+
+    function restartRecognition() {
+      if (!isRecording) return;
+      try { recognition.stop(); } catch(e) {}
+      setTimeout(() => {
+        if (!isRecording) return;
+        recognition = createRecognition();
+        try { recognition.start(); } catch(e) {}
+      }, 200);
+    }
+
+    function startRecording() {
+      if (!SpeechRecognition) return;
+      isRecording = true;
+      elapsedSec = 0;
+      recBtn.className = 'rec-btn recording';
+      recBtn.textContent = '⏹';
+      recStatus.className = 'rec-status on';
+      recStatus.textContent = '🔴 녹음 중... 00:00';
+      elapsedTimer = setInterval(() => {
+        elapsedSec++;
+        recStatus.textContent = '🔴 녹음 중... ' + fmtTime(elapsedSec);
+      }, 1000);
+      recognition = createRecognition();
+      recognition.start();
+    }
+
+    function stopRecording() {
       isRecording = false;
-      clearInterval(chunkTimer);
       clearInterval(elapsedTimer);
-      if (mediaRecorder) {
-        mediaRecorder.stop();
-        mediaRecorder.stream.getTracks().forEach(t => t.stop());
-        mediaRecorder = null;
-      }
+      clearTimeout(restartTimer);
+      if (recognition) { try { recognition.stop(); } catch(e) {} recognition = null; }
       recBtn.className = 'rec-btn idle';
       recBtn.textContent = '🎙️';
-      recStatus.className = 'rec-status on';
-      recStatus.textContent = '💬 마지막 구간 전사 중...';
-      await sendChunk(true);
       recStatus.className = 'rec-status';
       recStatus.textContent = '✅ 녹음 완료. 내용을 확인 후 회의록을 생성하세요.';
       interimEl.textContent = '';
-    }
-
-    async function sendChunk(isFinal) {
-      if (audioChunks.length === 0) return;
-      const chunks = [...audioChunks];
-      audioChunks = [];
-      const mimeType = chunks[0].type || 'audio/webm';
-      const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
-      const blob = new Blob(chunks, { type: mimeType });
-      if (blob.size < 1000) return; // 너무 짧으면 무시
-
-      if (!isFinal) interimEl.textContent = '💬 전사 중...';
-      const form = new FormData();
-      form.append('audio', blob, 'chunk.' + ext);
-      try {
-        const r = await fetch('/transcribe-chunk', { method: 'POST', body: form });
-        const { text, error } = await r.json();
-        if (text && text.trim()) {
-          transcriptBox.value += (transcriptBox.value ? ' ' : '') + text.trim();
-          charCount.textContent = transcriptBox.value.length;
-        }
-        if (error) interimEl.textContent = '⚠️ ' + error;
-        else if (!isFinal) interimEl.textContent = '';
-      } catch(e) {
-        interimEl.textContent = '⚠️ 전사 오류: ' + e.message;
-      }
     }
 
     function downloadTranscript() {
