@@ -1,0 +1,21 @@
+{
+  "name": "meeting-agent",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "회의 녹취 파일을 자동으로 분석하여 DOCX 회의록을 생성하는 멀티 에이전트 시스템",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "commander": "^13.1.0",
+    "docx": "^9.5.0",
+    "dotenv": "^16.4.7",
+    "formidable": "^3.5.4",
+    "openai": "^4.90.0"
+  }
+}
