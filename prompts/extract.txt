@@ -7,9 +7,9 @@
 2. venue: 회의 장소. 없으면 null.
 3. external_participants: 외부 참석자 목록 (외부 기관, 협력사, 고객사 인원). 불분명하면 빈 배열.
 4. internal_participants: 내부 참석자 목록. 역할/직책 포함.
-5. summary: 회의 전체 내용을 3줄 이내로 요약.
-6. decisions: 회의에서 확정된 결정사항 목록.
-7. action_items: 담당자가 지정된 할 일 목록. task, assignee, due_date(YYYY-MM-DD 또는 null), priority(high/medium/low) 포함.
+5. summary: 회의 전체 핵심 내용을 5~7문장으로 상세하게 요약. 주요 논의 사항, 결정 배경, 주요 수치/일정 포함.
+6. decisions: 회의에서 확정된 결정사항 목록. 각 항목은 구체적인 내용(수치, 날짜, 담당자 등)을 포함하여 상세하게 작성.
+7. action_items: 담당자가 지정된 할 일 목록. task는 구체적인 업무 내용을 상세히 기술. assignee, due_date(YYYY-MM-DD 또는 null), priority(high/medium/low) 포함.
 8. next_meeting: 다음 회의 일정. 없으면 null.
 
 출력 형식 (순수 JSON만, 마크다운 코드블록 사용 금지):
@@ -18,11 +18,11 @@
   "venue": null,
   "external_participants": [],
   "internal_participants": ["참석자1 (직책)", "참석자2"],
-  "summary": "회의 3줄 요약",
-  "decisions": ["결정사항 1", "결정사항 2"],
+  "summary": "회의 전반에 걸친 상세 요약 (5~7문장). 주요 안건, 논의된 사항, 결정된 내용, 후속 계획 포함.",
+  "decisions": ["구체적인 결정사항 1 (수치/날짜/담당자 포함)", "결정사항 2"],
   "action_items": [
     {
-      "task": "업무 내용",
+      "task": "구체적이고 상세한 업무 내용",
       "assignee": "담당자명",
       "due_date": "2025-01-31",
       "priority": "high"

@@ -434,9 +434,12 @@ function renderPage() {
           <div style="font-size:11px;color:#aaa;margin-top:2px">Chrome 브라우저 권장 · 한국어 자동 인식</div>
         </div>
       </div>
-      <textarea id="transcript-box" placeholder="녹음을 시작하면 여기에 텍스트가 실시간으로 표시됩니다.&#10;녹음 후 내용을 직접 수정할 수도 있습니다."></textarea>
+      <textarea id="transcript-box" placeholder="녹음을 시작하면 30초마다 자동으로 전사됩니다.&#10;녹음 후 내용을 직접 수정할 수도 있습니다."></textarea>
       <div id="interim-text"></div>
-      <div class="char-count"><span id="char-count">0</span>자</div>
+      <div class="char-count" style="display:flex;justify-content:space-between;align-items:center">
+        <span><span id="char-count">0</span>자</span>
+        <button onclick="downloadTranscript()" style="font-size:12px;padding:3px 10px;background:#f0f4ff;border:1px solid #2E75B6;border-radius:4px;color:#2E75B6;cursor:pointer">📄 전사본 다운로드</button>
+      </div>
     </div>
 
     <div class="grid" style="margin-top:14px">
@@ -522,75 +525,107 @@ function renderPage() {
       pollJob(id, statusEl);
     });
 
-    // ── 탭2: 실시간 녹음 (Web Speech API) ──
+    // ── 탭2: 실시간 녹음 (MediaRecorder + OpenAI Whisper) ──
     const transcriptBox = document.getElementById('transcript-box');
     const interimEl     = document.getElementById('interim-text');
     const recBtn        = document.getElementById('rec-btn');
     const recStatus     = document.getElementById('rec-status');
     const charCount     = document.getElementById('char-count');
-    let recognition = null;
-    let isRecording = false;
+    let mediaRecorder = null;
+    let audioChunks   = [];
+    let isRecording   = false;
+    let chunkTimer    = null;
+    let elapsedTimer  = null;
+    let elapsedSec    = 0;
 
     transcriptBox.addEventListener('input', () => { charCount.textContent = transcriptBox.value.length; });
+    recBtn.addEventListener('click', () => { if (!isRecording) startRecording(); else stopRecording(); });
 
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      recBtn.disabled = true;
-      recStatus.textContent = '⚠️ 이 브라우저는 음성 인식을 지원하지 않습니다. Chrome을 사용해주세요.';
-    }
+    function fmtTime(s) { return String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0'); }
 
-    recBtn.addEventListener('click', () => {
-      if (!isRecording) startRecording(); else stopRecording();
-    });
-
-    function startRecording() {
-      recognition = new SpeechRecognition();
-      recognition.lang = 'ko-KR';
-      recognition.continuous = true;
-      recognition.interimResults = true;
-
-      recognition.onstart = () => {
+    async function startRecording() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4';
+        mediaRecorder = new MediaRecorder(stream, { mimeType });
+        audioChunks = [];
         isRecording = true;
+        elapsedSec = 0;
+
         recBtn.className = 'rec-btn recording';
         recBtn.textContent = '⏹';
         recStatus.className = 'rec-status on';
-        recStatus.textContent = '🔴 녹음 중...';
-      };
+        recStatus.textContent = '🔴 녹음 중... 00:00';
 
-      recognition.onresult = (e) => {
-        let interim = '';
-        for (let i = e.resultIndex; i < e.results.length; i++) {
-          if (e.results[i].isFinal) {
-            transcriptBox.value += e.results[i][0].transcript + ' ';
-            charCount.textContent = transcriptBox.value.length;
-          } else {
-            interim += e.results[i][0].transcript;
-          }
-        }
-        interimEl.textContent = interim;
-      };
+        elapsedTimer = setInterval(() => {
+          elapsedSec++;
+          if (isRecording) recStatus.textContent = '🔴 녹음 중... ' + fmtTime(elapsedSec);
+        }, 1000);
 
-      recognition.onerror = (e) => {
-        recStatus.textContent = '⚠️ 오류: ' + e.error + ' (마이크 권한을 확인해주세요)';
-        stopRecording();
-      };
+        mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data); };
+        mediaRecorder.start(1000);
 
-      recognition.onend = () => {
-        interimEl.textContent = '';
-        if (isRecording) recognition.start(); // 자동 재시작 (30초 제한 우회)
-      };
-
-      recognition.start();
+        // 30초마다 자동 전사
+        chunkTimer = setInterval(() => sendChunk(false), 30000);
+      } catch(err) {
+        recStatus.textContent = '⚠️ 마이크 접근 실패: ' + err.message;
+      }
     }
 
-    function stopRecording() {
+    async function stopRecording() {
       isRecording = false;
-      if (recognition) { recognition.onend = null; recognition.stop(); recognition = null; }
+      clearInterval(chunkTimer);
+      clearInterval(elapsedTimer);
+      if (mediaRecorder) {
+        mediaRecorder.stop();
+        mediaRecorder.stream.getTracks().forEach(t => t.stop());
+        mediaRecorder = null;
+      }
       recBtn.className = 'rec-btn idle';
       recBtn.textContent = '🎙️';
+      recStatus.className = 'rec-status on';
+      recStatus.textContent = '💬 마지막 구간 전사 중...';
+      await sendChunk(true);
       recStatus.className = 'rec-status';
-      recStatus.textContent = '녹음 완료. 내용을 확인 후 회의록을 생성하세요.';
+      recStatus.textContent = '✅ 녹음 완료. 내용을 확인 후 회의록을 생성하세요.';
       interimEl.textContent = '';
+    }
+
+    async function sendChunk(isFinal) {
+      if (audioChunks.length === 0) return;
+      const chunks = [...audioChunks];
+      audioChunks = [];
+      const mimeType = chunks[0].type || 'audio/webm';
+      const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
+      const blob = new Blob(chunks, { type: mimeType });
+      if (blob.size < 1000) return; // 너무 짧으면 무시
+
+      if (!isFinal) interimEl.textContent = '💬 전사 중...';
+      const form = new FormData();
+      form.append('audio', blob, 'chunk.' + ext);
+      try {
+        const r = await fetch('/transcribe-chunk', { method: 'POST', body: form });
+        const { text, error } = await r.json();
+        if (text && text.trim()) {
+          transcriptBox.value += (transcriptBox.value ? ' ' : '') + text.trim();
+          charCount.textContent = transcriptBox.value.length;
+        }
+        if (error) interimEl.textContent = '⚠️ ' + error;
+        else if (!isFinal) interimEl.textContent = '';
+      } catch(e) {
+        interimEl.textContent = '⚠️ 전사 오류: ' + e.message;
+      }
+    }
+
+    function downloadTranscript() {
+      const text = transcriptBox.value.trim();
+      if (!text) { alert('전사된 내용이 없습니다.'); return; }
+      const date = new Date().toISOString().slice(0,10).replace(/-/g,'');
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = '전사본_' + date + '.txt';
+      a.click();
     }
 
     async function generateFromText() {
@@ -678,6 +713,39 @@ const server = http.createServer(async (req, res) => {
       } catch(e) {
         res.writeHead(400, {'Content-Type':'application/json'});
         res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // 실시간 녹음 청크 전사
+  if (req.method === 'POST' && url.pathname === '/transcribe-chunk') {
+    if (!process.env.OPENAI_API_KEY) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: 'OPENAI_API_KEY가 설정되지 않았습니다.' }));
+    }
+    if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+    const form = new IncomingForm({ uploadDir: UPLOAD_DIR, keepExtensions: true, maxFileSize: 25 * 1024 * 1024 });
+    form.parse(req, async (err, fields, files) => {
+      if (err) { res.writeHead(400, {'Content-Type':'application/json'}); return res.end(JSON.stringify({ error: err.message })); }
+      const uploaded = Array.isArray(files.audio) ? files.audio[0] : files.audio;
+      if (!uploaded) { res.writeHead(400, {'Content-Type':'application/json'}); return res.end(JSON.stringify({ error: '오디오 없음' })); }
+      const filePath = uploaded.filepath || uploaded.path;
+      try {
+        const { default: OpenAI } = await import('openai');
+        const { toFile } = await import('openai');
+        const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+        const origName = uploaded.originalFilename || 'chunk.webm';
+        const fileStream = fs.createReadStream(filePath);
+        const file = await toFile(fileStream, origName);
+        const response = await openai.audio.transcriptions.create({ model: 'whisper-1', file, language: 'ko' });
+        res.writeHead(200, {'Content-Type':'application/json'});
+        res.end(JSON.stringify({ text: response.text }));
+      } catch(e) {
+        res.writeHead(500, {'Content-Type':'application/json'});
+        res.end(JSON.stringify({ error: e.message }));
+      } finally {
+        try { fs.unlinkSync(filePath); } catch {}
       }
     });
     return;
